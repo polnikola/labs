@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import math
 import numpy as np
 from scipy.fft import fft, fftfreq, fftshift, ifft, rfft
-from scipy.signal import butter, lfilter, cheby2, cheby1, impulse2, freqz, spectrogram
+from scipy.signal import butter, lfilter, cheby2, cheby1, freqz, spectrogram
 import pywt
 
 
