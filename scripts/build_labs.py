@@ -15,6 +15,8 @@ def make(num, pc, lab, cells):
     folder.mkdir(exist_ok=True)
     n=nb.v4.new_notebook(cells=[nb.v4.new_markdown_cell(f'# Лабораторная работа №{lab}\n\nНомер по списку: **{num}**, ПК: **{pc}**, группа: **2**.\n\nВарианты таблиц выбираются по кругу: (номер−1) % число строк + 1. Для ЛР3–4 N=ПК+группа; N не является номером по списку.')])
     n.cells += [nb.v4.new_code_cell(COMMON+f'number={num}; pc={pc}; group=2\nrng=np.random.default_rng({num*100+pc})\n')]
+    if lab == 3:
+        cells = cells[:-1] + transient_cells() + cells[-1:]
     for kind, src in cells: n.cells.append((nb.v4.new_code_cell if kind=='c' else nb.v4.new_markdown_cell)(src.strip()))
     n.metadata.kernelspec={'display_name':'Python 3','language':'python','name':'python3'}
     nb.write(n,folder/f'lab{lab}.ipynb')
@@ -261,6 +263,99 @@ assert np.all(np.isfinite(coef))
 '''),('m',r'''## Выводы
 Прямоугольное окно даёт узкий главный лепесток, но сильнее растекается по частоте. Хэмминг подавляет боковые лепестки, расширяя основной. Короткое окно выделяет паузы, но размывает частоты; длинное лучше разделяет каналы или показывает наклон ЛЧМ, зато сглаживает моменты переключения. Шаг 1 даёт более плотную картину, а шаг в окно — меньше временных столбцов при том же частотном разрешении. Нулевое дополнение БПФ интерполирует спектр и не заменяет увеличение окна.
 CWT меняет временное разрешение с частотой: на высоких частотах эффективное окно короче. Края записи подвержены краевым эффектам, поэтому яркость у границ не следует интерпретировать как отдельные сигналы. Значения |CWT|² не равны калиброванной СПМ STFT.''')])
+
+def transient_cells():
+    return [('m',r"""## КИХ через FFT и БИХ: включение, прохождение и выключение сигнала
+
+Идеальная частотная маска выше имеет бесконечную двустороннюю ИХ. Для реализуемого **КИХ** задаём конечную ИХ оконным методом `firwin` и вычисляем **линейную свёртку через FFT** (`fftconvolve`, с нулевым дополнением). КИХ каузален, имеет линейную фазу и задержку $(K-1)/(2f_s)$.
+
+Три фильтра: КИХ–FFT, БИХ Баттерворта и БИХ Чебышёва II. Начальные состояния нулевые. Вход содержит три участка: тишина, сигнал, тишина после сигнала. Для видеоимпульса сохраняется длительность по варианту. Для АМ несущая включается на конечный интервал; параметры АМ сохраняются.
+
+Измеряем максимум выхода, отношение энергий выхода и входа, момент максимума, энергию остаточного отклика после выключения и время, после которого |y| остаётся ниже 1% максимума выхода. Последний показатель — длительность затухания по выбранному порогу, а не точное время исчезновения БИХ-отклика. БИХ теоретически затухает бесконечно. Для полосового сигнала задержка зависит от частоты; разность положений пиков не является универсальной групповой задержкой.
+"""),('c',r"""
+# Конечный КИХ: те же границы частот и тот же тип фильтра.
+numtaps=1025 if L==0 else 2049
+fir=signal.firwin(numtaps,edges,pass_zero=(L!=0),window='hamming',fs=fs)
+fir_delay=(numtaps-1)/(2*fs)
+if L==0:
+    on=200e-9; duration=ti; total=2e-6
+else:
+    on=1e-6; duration=2e-6; total=16e-6
+ns=int(round(total*fs)); tt=np.arange(ns)/fs
+start_index=int(round(on*fs)); active_count=int(round(duration*fs))
+end_index=start_index+active_count; off=end_index/fs
+xx=np.zeros(ns)
+local=np.arange(active_count)/fs
+xx[start_index:end_index]=(np.ones(active_count) if L==0 else
+    (1+.5*np.cos(2*np.pi*fm*local))*np.cos(2*np.pi*fc*local))
+outputs={
+    'КИХ через FFT':signal.fftconvolve(xx,fir,mode='full')[:ns],
+    'БИХ Баттерворта':signal.sosfilt(sos_b,xx),
+    'БИХ Чебышёва II':signal.sosfilt(sos_c,xx)}
+assert np.allclose(outputs['КИХ через FFT'],signal.lfilter(fir,[1],xx),atol=1e-11)
+assert all(np.max(np.abs(y[:start_index]))<1e-10 for y in outputs.values())
+print(f'КИХ: {numtaps} коэффициентов, порядок {numtaps-1}, задержка {fir_delay*tscale:.3f} {tunit}')
+# Общий вход и выход каждого фильтра: тишина → воздействие → хвост.
+fig,axs=plt.subplots(3,1,figsize=(14,10),sharex=True)
+for ax,(name,y) in zip(axs,outputs.items()):
+    ax.axvspan(0,on*tscale,color='gray',alpha=.12,label='До сигнала: вход 0')
+    ax.axvspan(on*tscale,off*tscale,color='green',alpha=.08,label='Сигнал на входе')
+    ax.axvspan(off*tscale,total*tscale,color='orange',alpha=.10,label='После выключения: вход 0')
+    ax.plot(tt*tscale,xx,color='gray',alpha=.6,lw=.7,label='Вход')
+    ax.plot(tt*tscale,y,lw=.9,label='Выход')
+    ax.axvline(on*tscale,color='green',ls='--'); ax.axvline(off*tscale,color='red',ls='--')
+    ax.set(title=name,ylabel='U'); ax.legend(fontsize=8,loc='upper right')
+axs[-1].set(xlabel='t, '+tunit,xlim=(0,total*tscale))
+plt.tight_layout(); plt.show()
+# Увеличение трёх этапов: одинаковые оси у всех фильтров.
+before_width=40e-9 if L==0 else .2e-6
+post_width=400e-9 if L==0 else 3e-6
+ranges=[(on-before_width,on),(on,off),(off,off+post_width)]
+fig,axs=plt.subplots(1,3,figsize=(18,4))
+for ax,(a,b),title in zip(axs,ranges,['Сигнала ещё нет','Сигнал действует','Вход выключен: остаточный отклик']):
+    sel=(tt>=a)&(tt<=b)
+    ax.plot(tt[sel]*tscale,xx[sel],'k:',label='Вход',alpha=.7)
+    for name,y in outputs.items(): ax.plot(tt[sel]*tscale,y[sel],label=name,lw=1)
+    ax.set(title=title,xlabel='t, '+tunit,ylabel='U'); ax.legend(fontsize=8)
+plt.tight_layout(); plt.show()
+# Количественная оценка прохождения и затухания.
+Ein=np.sum(xx**2)
+print('Фильтр | max|y| | Eвыход/Eвход | t максимума | хвост/Eвыход | затухание после выключения (1%)')
+for name,y in outputs.items():
+    peak=np.max(np.abs(y)); energy=np.sum(y**2)
+    above=np.flatnonzero(np.abs(y[end_index:])>peak*.01)
+    decay=((above[-1]+1)/fs) if len(above) else 0.
+    settled=not len(above) or above[-1]<len(y[end_index:])-1
+    decay_text=f'{decay*tscale:.3f} {tunit}' if settled else 'не затух за запись'
+    print(f'{name} | {peak:.5f} | {energy/Ein:.5f} | {tt[np.argmax(np.abs(y))]*tscale:.3f} {tunit} | '
+          f'{np.sum(y[end_index:]**2)/energy:.5f} | {decay_text}')
+# АЧХ, ФЧХ и ИХ именно реализуемых трёх фильтров.
+ff=np.linspace(0,fs/2,24000)
+_,hf=signal.freqz(fir,worN=ff,fs=fs)
+_,hb=signal.sosfreqz(sos_b,worN=ff,fs=fs)
+_,hc=signal.sosfreqz(sos_c,worN=ff,fs=fs)
+fig,axs=plt.subplots(1,3,figsize=(18,4))
+for name,h in [('КИХ через FFT',hf),('БИХ Баттерворта',hb),('БИХ Чебышёва II',hc)]:
+    axs[0].plot(ff/1e6,20*np.log10(np.maximum(np.abs(h),1e-8)),label=name)
+    ph=np.unwrap(np.angle(h)); ph[np.abs(h)<1e-4]=np.nan
+    axs[1].plot(ff/1e6,ph,label=name)
+probe=np.zeros(ns); probe[0]=1
+for name,h in [('КИХ через FFT',np.pad(fir,(0,ns-len(fir)))),
+               ('БИХ Баттерворта',signal.sosfilt(sos_b,probe)),
+               ('БИХ Чебышёва II',signal.sosfilt(sos_c,probe))]:
+    axs[2].plot(tt*tscale,h,label=name)
+flim=(0,300) if L==0 else (fc/1e6-3*fm/1e6,fc/1e6+3*fm/1e6)
+axs[0].set(title='АЧХ трёх фильтров',xlabel='f, МГц',ylabel='|H|, дБ',xlim=flim,ylim=(-100,5))
+axs[1].set(title='ФЧХ трёх фильтров',xlabel='f, МГц',ylabel='φ, рад',xlim=flim)
+axs[2].set(title='Каузальные импульсные характеристики',xlabel='t, '+tunit,ylabel='h(t)',xlim=(0,(.5e-6 if L==0 else 4e-6)*tscale))
+for ax in axs: ax.legend(fontsize=8)
+plt.tight_layout(); plt.show()
+"""),('m',r"""### Интерпретация переходных процессов
+При нулевом входе и нулевых начальных состояниях все три выхода равны нулю (малые значения FFT порядка машинной точности не являются физическим откликом). После включения возникает переходный процесс. КИХ задерживает сигнал на известное число отсчётов; его импульсный отклик конечен. БИХ накапливают состояние в обратных связях, поэтому после выключения входа остаётся затухающий колебательный хвост.
+
+Таблица показывает, какая доля энергии прошла через фильтр и какая её часть вышла уже после выключения входа. Отношение энергий относится ко всему импульсу; оно не является коэффициентом передачи на одной частоте. У заградительного фильтра АМ несущая подавляется, но боковые полосы проходят. Конечная длительность входа дополнительно расширяет спектр и возбуждает переходные процессы на границах.
+""")]
+
 if __name__=='__main__':
     for num,pc in [(10,10),(3,3)]:
         lab1(num,pc); lab2(num,pc); lab3(num,pc); lab4(num,pc)
